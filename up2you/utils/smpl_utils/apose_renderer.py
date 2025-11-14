@@ -65,7 +65,18 @@ class AposeRenderer(nn.Module):
         # self.rotation_matrix = np.array([[1, 0, 0],
         #                     [0, -1, 0],
         #                     [0, 0, -1]], dtype=np.float32)
-        
+    def _build_views(self, num_views: int):
+        """
+        均匀采样环向 yaw 角，返回与 get_orthogonal_camera 一致的 mvp / rot.
+        """
+        if num_views < 1:
+            raise ValueError(f"Invalid number of views: {num_views}")
+        # 0~360 均匀取样（不含 360）
+        yaws = [float(i) * (360.0 / num_views) for i in range(num_views)]
+        # 与你原先保持一致：传入负角并做 %360
+        yaws = [(-yaw) % 360.0 for yaw in yaws]
+        mvps, rots, _, _ = self.camera.get_orthogonal_camera(yaws)
+        return mvps, rots
         
 
     def camera_to_world_normal(self, normals_camera, masks, rot, bg_color):
@@ -82,31 +93,27 @@ class AposeRenderer(nn.Module):
         return normals_world
 
     def render_ortho_views(
-        self, mesh, height, width, normal_type, return_rgba, num_views,
+            self, mesh, height, width, normal_type, return_rgba, num_views,
     ):
-        if num_views == 6:
-            mvps = self.mvps_6
-            rots = self.rots_6
-        elif num_views == 4:
-            mvps = self.mvps_4
-            rots = self.rots_4
-        else:
-            raise ValueError(f"Invalid number of views: {num_views}")
+        mvps, rots = self._build_views(num_views)
         smpl_pkg = self.renderer(
             mesh,
             mvp=mvps,
             h=height, w=width, shading_mode='albedo',
             bg_color=self.bg_color,
         )
+
         if normal_type == "world":
-            smpl_normal = self.camera_to_world_normal(smpl_pkg['normal'], smpl_pkg['alpha'], rots, self.bg_color)
+            smpl_normal = self.camera_to_world_normal(
+                smpl_pkg['normal'], smpl_pkg['alpha'], rots, self.bg_color
+            )
         elif normal_type == "camera":
             smpl_normal = smpl_pkg['normal']
         else:
             raise ValueError(f"Invalid normal type: {normal_type}")
 
         smpl_semantic = smpl_pkg['image']
-        
+
         if return_rgba:
             smpl_normal_rgba = torch.cat([smpl_normal, smpl_pkg['alpha']], dim=-1)
             smpl_semantic_rgba = torch.cat([smpl_semantic, smpl_pkg['alpha']], dim=-1)
@@ -132,7 +139,7 @@ class AposeRenderer(nn.Module):
         width: int = 1024,
         normal_type: str = "camera",
         return_rgba: bool = False,
-        num_views: int = 6,
+        num_views: int = 20,
         return_mesh: bool = False,
     ):
         res = self.body_model(

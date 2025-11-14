@@ -43,8 +43,8 @@ class Reconstructor:
     def __init__(
         self,
         device,
-        normal_views=[0, 45, 90, 180, 270, 315],
-        color_views=[0, 45, 90, 180, 270, 315],
+        normal_views=[0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180, 198, 216, 234, 252, 270, 288, 306, 324, 342],
+        color_views=[0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180, 198, 216, 234, 252, 270, 288, 306, 324, 342],
         scale=2.0,
         resolution=1024,
         iters=700,
@@ -64,7 +64,7 @@ class Reconstructor:
         self.iters = iters
 
         # for color projection
-        self.weights = torch.Tensor([1., 0.4, 0.8, 1.0, 0.8, 0.4]).view(6,1,1,1).to(self.device)
+        self.weights = torch.Tensor([1.0, 0.8, 0.5, 0.4, 0.6, 0.8, 0.6, 0.5, 0.4, 0.4, 0.8, 0.6, 0.5, 0.4, 0.4, 0.8, 0.6, 0.5, 0.4, 0.4]).view(20,1,1,1).to(self.device)
 
         # for rescale
         self.mesh_center = None

@@ -15,7 +15,7 @@ class Dinov2Wrapper(nn.Module):
         self, 
         device='cuda', 
         dtype=torch.float16, 
-        model_name='dinov2_vitb14', 
+        model_name='dinov2_vitl14',
         freeze=True,
         image_size=None,
     ):

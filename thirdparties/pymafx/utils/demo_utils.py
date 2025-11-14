@@ -144,7 +144,7 @@ def smplify_runner(
     new_opt_joint_loss = new_opt_joint_loss.mean(dim=-1)
     # smplify_time = time.time() - start
     # print(f'Smplify time: {smplify_time}')
-    # Will update the dictionary for the examples where the new loss is less than the current one
+    # Will update the dictionary for the examples1 where the new loss is less than the current one
     update = (new_opt_joint_loss < opt_joint_loss)
 
     new_opt_vertices = output['verts']

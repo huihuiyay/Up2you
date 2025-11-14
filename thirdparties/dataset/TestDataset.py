@@ -360,7 +360,7 @@ if __name__ == '__main__':
 
     dataset = TestDataset(
         {
-            'image_dir': "./examples",
+            'image_dir': "./examples1",
             'has_det': True,  # w/ or w/o detection
             'hps_type': 'bev'  # pymaf/pare/pixie/hybrik/bev
         },

@@ -24,7 +24,7 @@ import shutil
 from up2you.utils.mesh_utils.mesh_common_renderer import CommonRenderer
 from up2you.utils.video_utils import tensor_to_video
 import gc
-
+NUM_VIEWS = 20  # 文件顶部常量
 
 def manual_seed(seed=42):
     torch.manual_seed(seed)
@@ -42,23 +42,33 @@ transform_image = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-def segment_rgbs(
-    rgbs,
-    seg_model,
-    device,
-):
-    processed_rgbs = []
+def has_alpha_any(im):
+    # 1) 带 'A' 的多通道（RGBA/LA/RGBa/La 等）
+    if 'A' in im.getbands():
+        return True
+    # 2) 调色板类透明（P/PA + tRNS）
+    if im.mode == 'P' and 'transparency' in im.info:
+        return True
+    return False
+
+def segment_rgbs(rgbs, seg_model, device):
+    out = []
     for image in rgbs:
-        if image.mode != 'RGBA':
-            input_image = transform_image(image).unsqueeze(0).to(device)
+        if has_alpha_any(image):
+            # 统一展开为 RGBA，避免后续流程掉坑
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+        else:
+            x = transform_image(image).unsqueeze(0).to(device)
             with torch.no_grad():
-                preds = seg_model(input_image)[-1].sigmoid().cpu()
-                pred = preds[0].squeeze()
-                pred_pil = transforms.ToPILImage()(pred)
-                mask = pred_pil.resize(image.size)
-                image.putalpha(mask)
-        processed_rgbs.append(image)
-    return processed_rgbs
+                pred = seg_model(x)[-1].sigmoid().cpu()[0].squeeze()
+            mask = transforms.ToPILImage()(pred).resize(image.size)
+            # putalpha 会在无 alpha 时自动转成 LA/RGBA 再写入
+            image.putalpha(mask)  # Pillow 会自动变成 RGBA/LA 写入 alpha。:contentReference[oaicite:3]{index=3}
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+        out.append(image)
+    return out
 
 def preprocess_ref_imgs(
     data_dir,
@@ -71,7 +81,7 @@ def preprocess_ref_imgs(
     ref_pils = []
     for ref_img_name in ref_img_names:
         ref_img_path = os.path.join(data_dir, ref_img_name)
-        ref_pil = Image.open(ref_img_path).convert("RGB")
+        ref_pil = Image.open(ref_img_path)
         ref_pil = ImageOps.exif_transpose(ref_pil)
         ref_pils.append(ref_pil)
     ref_rgbas = segment_rgbs(ref_pils, seg_model, device)
@@ -172,7 +182,7 @@ def stage3_weight_map_generation(
     target_pose_imgs = rearrange(
         target_poses,
         "(B Nv) C H W -> B Nv H W C",
-        Nv=6
+        Nv=20
     )
     ref_alphas = rearrange(ref_alphas, "(B Nr) H W -> B Nr H W", B=1)
     
@@ -209,7 +219,7 @@ def stage4_rgb_generation(
     )
 
     rgb_pipe.init_custom_adapter(
-        num_views=6,
+        num_views=20,
         mode='topk',
     )
     rgb_pipe.load_custom_adapter(
@@ -223,7 +233,7 @@ def stage4_rgb_generation(
     images = rgb_pipe(
         prompt=["Multi-view Human, Full Body, High Quality, HDR"],
         control_image=target_poses,
-        num_images_per_prompt=6,
+        num_images_per_prompt=20,
         generator=torch.Generator(device=device).manual_seed(42),
         num_inference_steps=50,
         guidance_scale=3.0,
@@ -258,7 +268,7 @@ def stage5_normal_generation(
     )
 
     normal_pipe.init_custom_adapter(
-        num_views=6,
+        num_views=20,
     )
     normal_pipe.load_custom_adapter(
         normal_adapter_path, weight_name='custom_adapter.safetensors'
@@ -271,7 +281,7 @@ def stage5_normal_generation(
     normals = normal_pipe(
         prompt=["Multi-view Human, Full Body, Normal Map, High Quality, HDR"],
         control_image=target_poses,
-        num_images_per_prompt=6,
+        num_images_per_prompt=20,
         generator=torch.Generator(device=device).manual_seed(42),
         num_inference_steps=50,
         guidance_scale=3.0,

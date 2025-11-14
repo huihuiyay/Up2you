@@ -79,7 +79,7 @@ To run the inference pipeline, you can use the following command:
 python inference_low_gpu.py \
     --base_model_path stabilityai/stable-diffusion-2-1-base  \
     --segment_model_name ZhengPeng7/BiRefNet \
-    --data_dir examples \
+    --data_dir examples1 \
     --output_dir outputs \
 ```
 
