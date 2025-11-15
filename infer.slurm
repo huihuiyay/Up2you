@@ -5,7 +5,7 @@
 #SBATCH -t 12:00:00                      # 运行时间上限
 #SBATCH --qos=lv1                        # QOS
 #SBATCH -o infer_diffusion.log           # 日志输出文件
-#SBATCH --gres=gpu:1                     # 使用 1 块 GPU
+#SBATCH --gres=gpu:2                     # 使用 1 块 GPU
 #SBATCH -N 1                             # 1 个节点
 #SBATCH --account=research               # 账⼾/项目名
 
