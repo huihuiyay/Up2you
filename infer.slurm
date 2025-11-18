@@ -11,8 +11,8 @@
 
 
 python inference_low_gpu.py \
-  --base_model_path /share/mas/huangping/yuzihui/models/stable-diffusion-2-1-base \
-  --segment_model_name /share/mas/huangping/yuzihui/models/BiRefNet \
+  --base_model_path /share/mas/huangping/yuzihui/up2you/models/stable-diffusion-2-1-base \
+  --segment_model_name /share/mas/huangping/yuzihui/up2you/models/BiRefNet \
   --data_dir examples \
   --output_dir outputs
 
