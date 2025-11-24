@@ -547,22 +547,64 @@ class UP2YouMV2NormalPipeline(StableDiffusionPipeline, CustomAdapterMixin):
                     down_intrablock_additional_residuals = None
 
                 # predict the noise residual
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    down_intrablock_additional_residuals=down_intrablock_additional_residuals,
-                    return_dict=False,
-                )[0]
+                # THG优化：检测是否使用Tortoise-Hare调度器
+                from up2you.schedulers.scheduling_thg import TortoiseHareGuidanceScheduler
+                use_thg = isinstance(self.scheduler, TortoiseHareGuidanceScheduler)
 
-                # perform guidance
-                if self.do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (
-                        noise_pred_text - noise_pred_uncond
+                if use_thg and self.do_classifier_free_guidance:
+                    # THG模式：可能只运行条件分支
+                    should_update_guidance = self.scheduler.should_update_guidance(i)
+
+                    if should_update_guidance:
+                        # 完整CFG：运行cond + uncond
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=cross_attention_kwargs,
+                            down_intrablock_additional_residuals=down_intrablock_additional_residuals,
+                            return_dict=False,
+                        )[0]
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    else:
+                        # 仅运行条件分支（节省一半计算）
+                        noise_pred_text = self.unet(
+                            latents,  # 只用条件latent
+                            t,
+                            encoder_hidden_states=prompt_embeds[prompt_embeds.shape[0]//2:],  # 只用条件prompt
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=cross_attention_kwargs,
+                            down_intrablock_additional_residuals=down_intrablock_additional_residuals,
+                            return_dict=False,
+                        )[0]
+                        noise_pred_uncond = None
+
+                    # 使用THG调度器计算最终噪声
+                    noise_pred, _ = self.scheduler.compute_noise_pred_with_thg(
+                        noise_pred_text,
+                        noise_pred_uncond,
+                        self.guidance_scale,
+                        i,
                     )
+                else:
+                    # 标准模式：始终运行完整UNet
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        down_intrablock_additional_residuals=down_intrablock_additional_residuals,
+                        return_dict=False,
+                    )[0]
+
+                    # perform guidance
+                    if self.do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (
+                            noise_pred_text - noise_pred_uncond
+                        )
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
