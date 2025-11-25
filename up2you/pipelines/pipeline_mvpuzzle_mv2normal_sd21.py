@@ -577,12 +577,24 @@ class UP2YouMV2NormalPipeline(StableDiffusionPipeline, CustomAdapterMixin):
                         else:
                             adapter_cond_only = None
 
+                        # 修复：同样需要分离cross_attention_kwargs中的ref_hidden_states
+                        if cross_attention_kwargs is not None and "ref_hidden_states" in cross_attention_kwargs:
+                            ref_hidden_states_cond = {
+                                k: v.chunk(2)[1] for k, v in cross_attention_kwargs["ref_hidden_states"].items()
+                            }
+                            cross_attention_kwargs_cond = {
+                                **cross_attention_kwargs,
+                                "ref_hidden_states": ref_hidden_states_cond,
+                            }
+                        else:
+                            cross_attention_kwargs_cond = cross_attention_kwargs
+
                         noise_pred_text = self.unet(
                             latents,  # 只用条件latent
                             t,
                             encoder_hidden_states=prompt_embeds[prompt_embeds.shape[0]//2:],  # 只用条件prompt
                             timestep_cond=timestep_cond,
-                            cross_attention_kwargs=cross_attention_kwargs,
+                            cross_attention_kwargs=cross_attention_kwargs_cond,  # 修复：只用条件ref_hidden_states
                             down_intrablock_additional_residuals=adapter_cond_only,  # 修复：只用条件adapter
                             return_dict=False,
                         )[0]
