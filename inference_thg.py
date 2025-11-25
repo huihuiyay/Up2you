@@ -291,6 +291,14 @@ def main(args):
         image.save(os.path.join(output_rgb_dir, f"{idx}.png"))
         images_rgba.append(image)
 
+    # 转换RGB为tensor（用于法线生成）
+    # 注意：load_image不带return_alpha参数时返回HWC格式（无alpha）
+    mv_rgbs = []
+    for image_rgba in images_rgba:
+        mv_rgbs.append(load_image(image_rgba, 768, 768))
+    mv_rgbs = torch.stack(mv_rgbs)
+    mv_rgbs = mv_rgbs.permute(0, 3, 1, 2).to(device)
+
     del rgb_pipe
     torch.cuda.empty_cache()
 
@@ -321,15 +329,10 @@ def main(args):
     normal_pipe.cond_encoder.to(device=device, dtype=dtype)  # 修复：adapter也需要转换为fp16
     normal_pipe.enable_vae_slicing()
 
-    images_tensor = rearrange(
-        torch.stack([load_image(image, 768, 768) for image in images_rgba]),
-        "Nv H W C -> Nv C H W"
-    ).to(device)
-
     with torch.no_grad():
         normals = normal_pipe(
             prompt=["Multi-view Human, Full Body, Normal Map, High Quality, HDR"],
-            reference_rgbs=images_tensor,
+            reference_rgbs=mv_rgbs,  # 修复：使用转换后的mv_rgbs
             control_image=target_poses,
             num_images_per_prompt=20,
             generator=torch.Generator(device=device).manual_seed(args.seed),
