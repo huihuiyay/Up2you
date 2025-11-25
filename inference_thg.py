@@ -292,10 +292,18 @@ def main(args):
         images_rgba.append(image)
 
     # 转换RGB为tensor（用于法线生成）
-    # 注意：load_image不带return_alpha参数时返回HWC格式（无alpha）
+    # 注意：这些是RGB图像（无alpha通道），直接转换为tensor
     mv_rgbs = []
-    for image_rgba in images_rgba:
-        mv_rgbs.append(load_image(image_rgba, 768, 768))
+    for image_rgb in images_rgba:
+        # 确保是RGB模式并resize
+        if image_rgb.mode != 'RGB':
+            image_rgb = image_rgb.convert('RGB')
+        image_rgb = image_rgb.resize((768, 768))
+        # 转换为tensor [H, W, C]，范围[0, 1]
+        img_array = np.array(image_rgb).astype(np.float32) / 255.0
+        mv_rgbs.append(torch.from_numpy(img_array))
+
+    # Stack并转换为 [N, C, H, W] 格式
     mv_rgbs = torch.stack(mv_rgbs)
     mv_rgbs = mv_rgbs.permute(0, 3, 1, 2).to(device)
 
