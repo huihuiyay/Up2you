@@ -139,8 +139,7 @@ def main(args):
         device,
         output_ref_imgs_dir=output_ref_imgs_dir,
     )
-    del seg_model
-    torch.cuda.empty_cache()
+    # 注意：seg_model稍后还需要用于RGB和法线图的分割，暂不删除
 
     # 3. 特征提取和形状预测
     print("\n[3/8] 提取图像特征和预测身体形状...")
@@ -286,24 +285,17 @@ def main(args):
 
     output_rgb_dir = os.path.join(args.output_dir, "rgb")
     os.makedirs(output_rgb_dir, exist_ok=True)
-    images_rgba = []
-    for idx, image in enumerate(images):
+
+    # 为RGB图像添加alpha通道（使用分割模型）
+    images_rgba = segment_rgbs(images, seg_model, device)
+    for idx, image in enumerate(images_rgba):
         image.save(os.path.join(output_rgb_dir, f"{idx}.png"))
-        images_rgba.append(image)
 
-    # 转换RGB为tensor（用于法线生成）
-    # 注意：这些是RGB图像（无alpha通道），直接转换为tensor
+    # 转换RGBA为RGB tensor（用于法线生成）
+    # 使用load_image函数处理RGBA图像，自动blend alpha通道
     mv_rgbs = []
-    for image_rgb in images_rgba:
-        # 确保是RGB模式并resize
-        if image_rgb.mode != 'RGB':
-            image_rgb = image_rgb.convert('RGB')
-        image_rgb = image_rgb.resize((768, 768))
-        # 转换为tensor [H, W, C]，范围[0, 1]
-        img_array = np.array(image_rgb).astype(np.float32) / 255.0
-        mv_rgbs.append(torch.from_numpy(img_array))
-
-    # Stack并转换为 [N, C, H, W] 格式
+    for image_rgba in images_rgba:
+        mv_rgbs.append(load_image(image_rgba, 768, 768))
     mv_rgbs = torch.stack(mv_rgbs)
     mv_rgbs = mv_rgbs.permute(0, 3, 1, 2).to(device)
 
@@ -359,11 +351,14 @@ def main(args):
 
     output_normal_dir = os.path.join(args.output_dir, "normal")
     os.makedirs(output_normal_dir, exist_ok=True)
-    normals_rgba = []
-    for idx, normal in enumerate(normals):
-        normal.save(os.path.join(output_normal_dir, f"{idx}.png"))
-        normals_rgba.append(normal)
 
+    # 为法线图添加alpha通道（使用分割模型）
+    normals_rgba = segment_rgbs(normals, seg_model, device)
+    for idx, normal in enumerate(normals_rgba):
+        normal.save(os.path.join(output_normal_dir, f"{idx}.png"))
+
+    # 清理显存
+    del seg_model
     del normal_pipe
     torch.cuda.empty_cache()
 
