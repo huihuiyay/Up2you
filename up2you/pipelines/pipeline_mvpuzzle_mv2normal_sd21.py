@@ -569,13 +569,21 @@ class UP2YouMV2NormalPipeline(StableDiffusionPipeline, CustomAdapterMixin):
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     else:
                         # 仅运行条件分支（节省一半计算）
+                        # 需要切分adapter输出，只用条件部分
+                        if down_intrablock_additional_residuals is not None:
+                            adapter_cond_only = [
+                                residual.chunk(2)[1] for residual in down_intrablock_additional_residuals
+                            ]
+                        else:
+                            adapter_cond_only = None
+
                         noise_pred_text = self.unet(
                             latents,  # 只用条件latent
                             t,
                             encoder_hidden_states=prompt_embeds[prompt_embeds.shape[0]//2:],  # 只用条件prompt
                             timestep_cond=timestep_cond,
                             cross_attention_kwargs=cross_attention_kwargs,
-                            down_intrablock_additional_residuals=down_intrablock_additional_residuals,
+                            down_intrablock_additional_residuals=adapter_cond_only,  # 修复：只用条件adapter
                             return_dict=False,
                         )[0]
                         noise_pred_uncond = None
