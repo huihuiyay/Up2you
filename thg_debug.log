@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/media/yuzihui/17A26BDB4251F93F/project/UP2You/inference_thg.py", line 11, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'

@@ -83,16 +83,25 @@ class TortoiseHareGuidanceScheduler:
         返回：
             (noise_pred, updated_guidance) - 噪声预测和是否更新了引导项的标志
         """
-        # 无CFG时直接返回条件预测
-        if noise_pred_uncond is None or guidance_scale == 1.0:
-            self.total_nfe += 1
+        # 无CFG时直接返回条件预测（不统计NFE，由pipeline统计）
+        if guidance_scale == 1.0:
             return noise_pred_cond, False
 
         # 判断是否需要更新引导项
         should_update = self.should_update_guidance(step_index)
 
+        # 调试输出
+        if step_index < 5 or step_index % 10 == 0:
+            uncond_status = "None" if noise_pred_uncond is None else "Present"
+            print(f"[THG] step={step_index}, should_update={should_update}, uncond={uncond_status}, saved={self.saved_nfe}")
+
         if should_update:
             # 乌龟+兔子：计算新的引导项
+            if noise_pred_uncond is None:
+                raise ValueError(
+                    f"THG: step {step_index} 应该更新引导项，但 noise_pred_uncond 为 None。"
+                    "这通常说明 pipeline 逻辑有误。"
+                )
             guidance_delta = noise_pred_cond - noise_pred_uncond
             self.cached_guidance_delta = guidance_delta
             self.last_guidance_step = step_index
@@ -100,6 +109,11 @@ class TortoiseHareGuidanceScheduler:
             updated = True
         else:
             # 只用乌龟：复用缓存的引导项
+            if noise_pred_uncond is not None:
+                raise ValueError(
+                    f"THG: step {step_index} 不应该更新引导项，但 noise_pred_uncond 不为 None。"
+                    "这通常说明 pipeline 没有跳过 uncond 分支。"
+                )
             guidance_delta = self.cached_guidance_delta
             self.total_nfe += 1  # 只有cond
             self.saved_nfe += 1

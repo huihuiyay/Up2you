@@ -554,6 +554,9 @@ class UP2YouMV2NormalPipeline(StableDiffusionPipeline, CustomAdapterMixin):
                 if use_thg and self.do_classifier_free_guidance:
                     # THG模式：可能只运行条件分支
                     should_update_guidance = self.scheduler.should_update_guidance(i)
+                    if i == 0:  # 只在第一步打印调试信息
+                        print(f"[THG DEBUG] use_thg={use_thg}, do_cfg={self.do_classifier_free_guidance}")
+                        print(f"[THG DEBUG] guidance_interval={self.scheduler.guidance_update_interval}")
 
                     if should_update_guidance:
                         # 完整CFG：运行cond + uncond
