@@ -7,6 +7,8 @@ UP2You 推理脚本 - 集成Tortoise and Hare Guidance (THG) 优化
 """
 
 import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import argparse
 import torch
 import numpy as np
@@ -175,13 +177,13 @@ def main(args):
     torch.cuda.empty_cache()
 
     # 4. 生成A-Pose
-    print("\n[4/8] 生成SMPL A-Pose (20视角)...")
+    print("\n[4/8] 生成SMPL A-Pose (12视角)...")
     apose_renderer = AposeRenderer(device=device)
     target_poses, _, smplx_v, smplx_f = apose_renderer(
         betas.reshape(1, 10),
         height=768,
         width=768,
-        num_views=20,  # 20视角
+        num_views=12,  # 12视角
         return_mesh=True
     )
 
@@ -218,7 +220,7 @@ def main(args):
     target_pose_imgs = rearrange(
         target_poses,
         "(B Nv) C H W -> B Nv H W C",
-        Nv=20
+        Nv=12
     )
     ref_alphas_rearranged = rearrange(ref_alphas, "(B Nr) H W -> B Nr H W", B=1)
 
@@ -229,11 +231,23 @@ def main(args):
             ref_alphas=ref_alphas_rearranged,
         )
 
+    # 清理不再需要的大型变量
     del feature_aggregator
+    del ref_img_feats  # 释放~1.5GB显存！
+    del target_pose_imgs
+    del ref_alphas_rearranged
+    del betas  # 也清理这个
+    del smplx_v, smplx_f  # 网格数据不再需要
     torch.cuda.empty_cache()
 
+    # 打印当前显存使用情况
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"  显存状态: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
     # 6. RGB生成 - 启用THG优化
-    print(f"\n[6/8] 生成RGB图像 (20视角, THG间隔={args.thg_interval})...")
+    print(f"\n[6/8] 生成RGB图像 (12视角, THG间隔={args.thg_interval})...")
     rgb_pipe = UP2YouI2MVSDPipeline.from_pretrained(
         args.base_model_path,
     )
@@ -251,7 +265,7 @@ def main(args):
     )
 
     rgb_pipe.init_custom_adapter(
-        num_views=20,
+        num_views=12,
         mode='topk',
     )
     rgb_pipe.load_custom_adapter(
@@ -268,7 +282,7 @@ def main(args):
             reference_rgbs=ref_rgbs,
             control_image=target_poses,  # 注意：参数名是 control_image 不是 control_images
             weight_maps=weight_maps,
-            num_images_per_prompt=20,
+            num_images_per_prompt=12,
             generator=torch.Generator(device=device).manual_seed(args.seed),
             num_inference_steps=args.num_inference_steps,
             guidance_scale=args.guidance_scale,
@@ -299,11 +313,18 @@ def main(args):
     mv_rgbs = torch.stack(mv_rgbs)
     mv_rgbs = mv_rgbs.permute(0, 3, 1, 2).to(device)
 
+    # 清理RGB pipeline和中间变量
     del rgb_pipe
+    del images  # 原始PIL图像列表已经不需要了
+    # 注意：images_rgba 在网格重建时还需要，暂不删除
+    del ref_rgbs  # 参考图像也不再需要
+    del ref_alphas  # alpha通道不再需要
+    # 注意：target_poses 法线生成还需要，暂不删除
+    # 注意：weight_maps 可能法线生成也需要，暂不删除（需要确认）
     torch.cuda.empty_cache()
 
     # 7. 法线生成 - 启用THG优化
-    print(f"\n[7/8] 生成法线图 (20视角, THG间隔={args.thg_interval})...")
+    print(f"\n[7/8] 生成法线图 (12视角, THG间隔={args.thg_interval})...")
     normal_pipe = UP2YouMV2NormalPipeline.from_pretrained(
         args.base_model_path,
     )
@@ -320,7 +341,7 @@ def main(args):
         guidance_update_interval=args.thg_interval,
     )
 
-    normal_pipe.init_custom_adapter(num_views=20)
+    normal_pipe.init_custom_adapter(num_views=12)
     normal_pipe.load_custom_adapter(
         args.normal_adapter_path, weight_name='custom_adapter.safetensors'
     )
@@ -334,7 +355,7 @@ def main(args):
             prompt=["Multi-view Human, Full Body, Normal Map, High Quality, HDR"],
             reference_rgbs=mv_rgbs,  # 修复：使用转换后的mv_rgbs
             control_image=target_poses,
-            num_images_per_prompt=20,
+            num_images_per_prompt=12,
             generator=torch.Generator(device=device).manual_seed(args.seed),
             num_inference_steps=args.num_inference_steps,
             guidance_scale=args.guidance_scale,
@@ -378,12 +399,19 @@ def main(args):
     )
 
     del reconstructor
+    del images_rgba  # 网格重建完成，现在可以删除了
+    del normals_rgba
     torch.cuda.empty_cache()
 
     # 9. 渲染视频
     print("\n[9/8] 渲染360度旋转视频...")
     video_renderer = CommonRenderer(resolution=1024, return_rgba=True)
-    render_rgbs, render_normals = video_renderer.render_video(gen_obj_path, 360)
+    render_rgbs, render_normals = video_renderer.render_video(
+        gen_obj_path,
+        albedo_path=None,
+        num_frames=360,
+        background_color="white"
+    )
 
     rgb_video_path = os.path.join(args.output_dir, "result_rgb.mp4")
     normal_video_path = os.path.join(args.output_dir, "result_normal.mp4")

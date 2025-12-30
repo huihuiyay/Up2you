@@ -139,7 +139,7 @@ class AposeRenderer(nn.Module):
         width: int = 1024,
         normal_type: str = "camera",
         return_rgba: bool = False,
-        num_views: int = 20,
+        num_views: int = 12,
         return_mesh: bool = False,
     ):
         res = self.body_model(

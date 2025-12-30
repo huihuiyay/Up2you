@@ -24,7 +24,7 @@ import shutil
 from up2you.utils.mesh_utils.mesh_common_renderer import CommonRenderer
 from up2you.utils.video_utils import tensor_to_video
 import gc
-NUM_VIEWS = 20  # 文件顶部常量
+NUM_VIEWS = 12  # 文件顶部常量
 
 def manual_seed(seed=42):
     torch.manual_seed(seed)
@@ -182,7 +182,7 @@ def stage3_weight_map_generation(
     target_pose_imgs = rearrange(
         target_poses,
         "(B Nv) C H W -> B Nv H W C",
-        Nv=20
+        Nv=12
     )
     ref_alphas = rearrange(ref_alphas, "(B Nr) H W -> B Nr H W", B=1)
     
@@ -219,7 +219,7 @@ def stage4_rgb_generation(
     )
 
     rgb_pipe.init_custom_adapter(
-        num_views=20,
+        num_views=12,
         mode='topk',
     )
     rgb_pipe.load_custom_adapter(
@@ -233,7 +233,7 @@ def stage4_rgb_generation(
     images = rgb_pipe(
         prompt=["Multi-view Human, Full Body, High Quality, HDR"],
         control_image=target_poses,
-        num_images_per_prompt=20,
+        num_images_per_prompt=12,
         generator=torch.Generator(device=device).manual_seed(42),
         num_inference_steps=50,
         guidance_scale=3.0,
@@ -268,7 +268,7 @@ def stage5_normal_generation(
     )
 
     normal_pipe.init_custom_adapter(
-        num_views=20,
+        num_views=12,
     )
     normal_pipe.load_custom_adapter(
         normal_adapter_path, weight_name='custom_adapter.safetensors'
@@ -281,7 +281,7 @@ def stage5_normal_generation(
     normals = normal_pipe(
         prompt=["Multi-view Human, Full Body, Normal Map, High Quality, HDR"],
         control_image=target_poses,
-        num_images_per_prompt=20,
+        num_images_per_prompt=12,
         generator=torch.Generator(device=device).manual_seed(42),
         num_inference_steps=50,
         guidance_scale=3.0,
