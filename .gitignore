@@ -1,0 +1,6 @@
+
+# ---- model weights (DO NOT COMMIT) ----
+models/stable-diffusion-2-1-base/
+*.ckpt
+*.safetensors
+*.bin
