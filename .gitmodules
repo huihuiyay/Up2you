@@ -1,0 +1,2 @@
+[submodule "thirdparties/PIXIE"]
+	url = git@github.com:huihuiyay/PIXIE.git
