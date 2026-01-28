@@ -132,6 +132,50 @@ class AposeRenderer(nn.Module):
         mesh.auto_normal()
         return mesh
 
+    def render_from_vertices(
+            self,
+            vertices_orig: torch.Tensor,  # [V,3] torch on device or cpu
+            faces: np.ndarray,  # [F,3] numpy or torch
+            height: int = 768,
+            width: int = 768,
+            normal_type: str = "camera",
+            return_rgba: bool = False,
+            num_views: int = 12,
+            return_mesh: bool = False,
+    ):
+        # 1) 转 numpy（沿用你原本 normalize_vertices 的 numpy 版本）
+        if isinstance(vertices_orig, torch.Tensor):
+            v_np = vertices_orig.detach().cpu().numpy()
+        else:
+            v_np = vertices_orig
+
+        v_norm = normalize_vertices(v_np, bound=0.9)
+
+        faces_np = faces.copy() if isinstance(faces, np.ndarray) else faces.detach().cpu().numpy().copy()
+
+        # 2) vertex color（语义上色）+ Mesh 构建
+        vertex_colors = part_segm_to_vertex_colors(self.part_segmentation, v_norm.shape[0])
+        vertex_colors = torch.from_numpy(vertex_colors).float().to(self.device)
+
+        v_tensor = torch.from_numpy(v_norm.copy()).float().to(self.device)
+        f_tensor = torch.from_numpy(faces_np.astype(np.int32)).to(self.device)
+
+        mesh = Mesh(v=v_tensor, f=f_tensor, vc=vertex_colors, device=self.device)
+        mesh.auto_normal()
+
+        # 3) 渲染 12 视角控制图
+        smpl_normals, smpl_semantics = self.render_ortho_views(
+            mesh, height, width, normal_type, return_rgba=return_rgba, num_views=num_views
+        )
+
+        if return_mesh:
+            # 注意：返回原始 vertices（不 normalize），以保持和你现在 Stage6 使用逻辑一致
+            v_orig_t = vertices_orig if isinstance(vertices_orig, torch.Tensor) else torch.from_numpy(
+                vertices_orig).float()
+            return smpl_normals, smpl_semantics, v_orig_t.to(self.device), f_tensor
+        else:
+            return smpl_normals, smpl_semantics
+
     def forward(
         self,
         betas: torch.Tensor,
@@ -149,13 +193,13 @@ class AposeRenderer(nn.Module):
         vertices_orig = res.vertices.squeeze(0).detach().cpu().numpy()
         vertices = normalize_vertices(vertices_orig, bound=0.9)
         faces = self.body_model.faces
-        
+
         vertices_copy = vertices.copy()
         faces_copy = faces.copy()
-        
+
         vertex_colors = part_segm_to_vertex_colors(self.part_segmentation, vertices.shape[0])
         vertex_colors = torch.from_numpy(vertex_colors).float().to(self.device)
-        
+
         vertices_tensor = torch.from_numpy(vertices_copy).float().to(self.device)
         faces_tensor = torch.from_numpy(faces_copy.astype(np.int32)).to(self.device)
         mesh = Mesh(v=vertices_tensor, f=faces_tensor, vc=vertex_colors, device=self.device)
