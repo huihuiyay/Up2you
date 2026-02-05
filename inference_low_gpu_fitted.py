@@ -1,4 +1,4 @@
-import os
+import os, math
 import argparse
 import torch
 import numpy as np
@@ -31,6 +31,11 @@ from thirdparties.PIXIE.pixielib.datasets.body_datasets import TestData
 from thirdparties.PIXIE.pixielib.utils.config import cfg as pixie_cfg
 from thirdparties.PIXIE.pixielib.utils import util
 from pytorch3d.transforms import rotation_6d_to_matrix, axis_angle_to_matrix, matrix_to_axis_angle
+from torchvision.utils import save_image
+from pytorch3d.transforms import matrix_to_axis_angle
+
+
+
 
 def manual_seed(seed=42):
     torch.manual_seed(seed)
@@ -151,17 +156,25 @@ def stage1_feature_extraction(
 
     return ref_img_feats, betas
 
-
 def stage2_pose_generation_from_pixie(
     pixie_input_image_path,
     body_model,
+    apose_renderer,
     device,
+    betas_stage1,
     height=768,
     width=768,
     normal_type="camera",
     num_views=12,
 ):
-    # 1) PIXIE encode
+    dtype = torch.float32
+    device = torch.device(device) if not isinstance(device, torch.device) else device
+
+    # 0) 以 AposeRenderer 内部 SMPLX 为准
+    if hasattr(apose_renderer, "body_model"):
+        body_model = apose_renderer.body_model
+
+    # 1) PIXIE encode/decode -> rotmats
     pixie_cfg.model.use_tex = False
     pixie = PIXIE(config=pixie_cfg, device=device)
 
@@ -171,110 +184,60 @@ def stage2_pose_generation_from_pixie(
     batch["image"] = batch["image"].unsqueeze(0)
     batch["image_hd"] = batch["image_hd"].unsqueeze(0)
 
-    data = {"body": batch}
-    param_dict = pixie.encode(data, threthold=True, keep_local=True, copy_and_paste=False)
-    param_body = param_dict["body"]
+    pb = pixie.encode({"body": batch}, threthold=True, keep_local=True, copy_and_paste=False)["body"]
+    _ = pixie.decode(pb, param_type="body")  # in-place rotmats
 
-    # 2) shape/exp
-    betas = param_body["shape"][..., :10].to(device)   # [B,10]
-    exp = param_body["exp"].to(device)                 # [B,50]
-    B = betas.shape[0]
+    # 2) betas：直接用 stage1
+    betas = betas_stage1.to(device=device, dtype=dtype)  # [1, nb]
+    betas = betas.view(betas.shape[0], -1)  # <- 关键：去掉多余维度
 
-    # ---- helpers ----
-    def to_rotmat_6d(x: torch.Tensor) -> torch.Tensor:
-        # x: [B,6] or [B,J*6] -> [B,J,3,3]
-        if x.ndim != 2 or x.shape[0] != B:
-            raise ValueError(f"Expected [B,6] or [B,J*6], got {tuple(x.shape)}")
-        if x.shape[1] == 6:
-            x = x[:, None, :]           # [B,1,6]
-        elif x.shape[1] % 6 == 0:
-            x = x.view(B, -1, 6)        # [B,J,6]
-        else:
-            raise ValueError(f"Invalid 6D shape: {tuple(x.shape)}")
-        return rotation_6d_to_matrix(x)  # [B,J,3,3]
+    # 3) rotmats（默认维度都对、batch=1）
+    global_R = pb["global_pose"][0].to(device=device, dtype=dtype)        # [3,3]
+    body_R   = pb["body_pose"].to(device=device, dtype=dtype)             # [1,N,3,3]
+    jaw_R    = pb["jaw_pose"][0].to(device=device, dtype=dtype)           # [3,3]
+    lh_R     = pb["left_hand_pose"].to(device=device, dtype=dtype)        # [1,15,3,3]
+    rh_R     = pb["right_hand_pose"].to(device=device, dtype=dtype)       # [1,15,3,3]
 
-    def hand_rotmat_to_pca_coef(hand_rotmat: torch.Tensor, components: torch.Tensor, mean: torch.Tensor) -> torch.Tensor:
-        """
-        hand_rotmat: [B,15,3,3]
-        components:  [ncomps,45] (smplx buffer)
-        mean:        [45] or [1,45]
-        return:      [B,ncomps]
-        """
-        # rotmat -> axis-angle: [B,15,3]
-        aa = matrix_to_axis_angle(hand_rotmat)              # [B,15,3]
-        aa = aa.reshape(B, 45)                              # [B,45]
-        mean_ = mean.reshape(1, 45).to(aa.device, aa.dtype) # [1,45]
-        comp_ = components.to(aa.device, aa.dtype)          # [ncomps,45]
+    n_body = int(getattr(body_model, "NUM_BODY_JOINTS", 21))
+    body_R = body_R[:, :n_body]
 
-        # smplx 里是: aa_recon = coef @ comp + mean
-        # 这里做投影：coef = (aa-mean) @ comp^T
-        coef = (aa - mean_) @ comp_.T                       # [B,ncomps]
-        return coef
+    # 4) 只保留 rx_pi：root 左乘翻转
+    Rfix = torch.diag(torch.tensor([1.0, -1.0, -1.0], device=device, dtype=dtype))
+    global_R = Rfix @ global_R
 
-    # 3) 组装 pose（全用 rotmat），并在 forward 里 pose2rot=False
-    global_pose = to_rotmat_6d(param_body["global_pose"])  # [B,1,3,3]
+    # 5) rotmat -> axis-angle（batch=1）
+    global_orient   = matrix_to_axis_angle(global_R)[None, :]                  # [1,3]
+    body_pose       = matrix_to_axis_angle(body_R).reshape(1, n_body * 3)      # [1,n_body*3]
+    jaw_pose        = matrix_to_axis_angle(jaw_R)[None, :]                     # [1,3]
+    left_hand_pose  = matrix_to_axis_angle(lh_R).reshape(1, 15 * 3)            # [1,45]
+    right_hand_pose = matrix_to_axis_angle(rh_R).reshape(1, 15 * 3)            # [1,45]
 
-    part = to_rotmat_6d(param_body["partbody_pose"])       # [B,17,3,3]
-    neck = to_rotmat_6d(param_body["neck_pose"])           # [B,1,3,3]
-    head = to_rotmat_6d(param_body["head_pose"])           # [B,1,3,3]
-    lw   = to_rotmat_6d(param_body["left_wrist_pose"])     # [B,1,3,3]
-    rw   = to_rotmat_6d(param_body["right_wrist_pose"])    # [B,1,3,3]
-    body_pose = torch.cat([part, neck, head, lw, rw], dim=1)  # [B,21,3,3]
+    # 6) SMPLX forward（显式给 expression，避免 cat 维度不一致）
+    ne = int(getattr(body_model, "num_expression_coeffs", 0))
+    expression = torch.zeros((betas.shape[0], ne), device=device, dtype=dtype) if ne > 0 else None
 
-    # jaw: axis-angle -> rotmat
-    jaw_aa = param_body["jaw_pose"]
-    if jaw_aa.ndim != 2 or jaw_aa.shape != (B, 3):
-        raise ValueError(f"Expected jaw_pose [B,3], got {tuple(jaw_aa.shape)}")
-    jaw_pose = axis_angle_to_matrix(jaw_aa)[:, None, :, :]  # [B,1,3,3]
-
-    # hands: PIXIE给的是每关节6D，我们先转 rotmat
-    left_hand_rm  = to_rotmat_6d(param_body["left_hand_pose"])   # [B,15,3,3]
-    right_hand_rm = to_rotmat_6d(param_body["right_hand_pose"])  # [B,15,3,3]
-
-    # ---- 关键：适配 SMPL-X use_pca ----
-    if getattr(body_model, "use_pca", False):
-        # smplx 里一般有这些 buffer：left_hand_components/mean, right_hand_components/mean
-        lh_comp = body_model.left_hand_components      # [ncomps,45]
-        lh_mean = body_model.left_hand_mean           # [45]
-        rh_comp = body_model.right_hand_components     # [ncomps,45]
-        rh_mean = body_model.right_hand_mean          # [45]
-
-        left_hand  = hand_rotmat_to_pca_coef(left_hand_rm,  lh_comp, lh_mean)  # [B,ncomps]
-        right_hand = hand_rotmat_to_pca_coef(right_hand_rm, rh_comp, rh_mean)  # [B,ncomps]
-    else:
-        left_hand  = left_hand_rm   # [B,15,3,3]
-        right_hand = right_hand_rm  # [B,15,3,3]
-
-    # 4) SMPL-X forward（rotmat输入必须 pose2rot=False）
     smpl_out = body_model(
         betas=betas,
-        global_orient=global_pose,
+        global_orient=global_orient,
         body_pose=body_pose,
-        left_hand_pose=left_hand,
-        right_hand_pose=right_hand,
+        left_hand_pose=left_hand_pose,
+        right_hand_pose=right_hand_pose,
         jaw_pose=jaw_pose,
-        expression=exp,
         transl=None,
-        pose2rot=False,   # <-- 关键
+        expression=expression,   # <- 关键：对齐维度
+        pose2rot=True,
     )
 
-    vertices = smpl_out.vertices.squeeze(0)
-    faces = body_model.faces
+    vertices = smpl_out.vertices[0]
+    faces = torch.from_numpy(body_model.faces.astype("int32")).to(device)
 
-    # 5) 渲染控制图
-    apose_renderer = AposeRenderer(device=device)
     smpl_normals, smpl_semantics = apose_renderer.render_from_vertices(
-        vertices,
-        faces,
-        height=height,
-        width=width,
+        vertices, faces,
+        height=height, width=width,
         normal_type=normal_type,
         return_rgba=False,
         num_views=num_views,
     )
-
-    del apose_renderer
-    clear_gpu_memory()
     return smpl_normals, smpl_semantics, vertices, faces
 
 def stage3_weight_map_generation(
@@ -505,13 +468,23 @@ def infer_in_the_wild_low_gpu(
     # 选一张参考图给 PIXIE 做拟合（通常用第一张/最正的那张）
     ref_img_names = sorted(os.listdir(ref_img_dir))
     pixie_img_path = os.path.join(ref_img_dir, ref_img_names[0])
-    apose_renderer = AposeRenderer(device=device)
+    smplx_path = "human_models/models/smplx/SMPLX_NEUTRAL.npz"
+    pixie_cfg.model.smplx_model_path = smplx_path  # 统一 PIXIE
+    apose_renderer = AposeRenderer(
+        device=device,
+        smplx_model_path=pixie_cfg.model.smplx_model_path
+    )
     body_model = apose_renderer.body_model
-    target_poses, smplx_v, smplx_f = stage2_pose_generation_from_pixie(
+    target_poses, smpl_semantics, smplx_v, smplx_f = stage2_pose_generation_from_pixie(
         pixie_img_path,
         body_model,
+        apose_renderer,
         device,
+        betas_stage1=betas,
     )
+
+    del apose_renderer
+    clear_gpu_memory()
 
     save_image(ref_rgbs, os.path.join(output_dir, "ref_rgbs.png"))
     save_image(target_poses, os.path.join(output_dir, "target_pose.png"))

@@ -40,7 +40,7 @@ class AposeRenderer(nn.Module):
         super().__init__()
         self.device = device
         self.body_model = smplx.SMPLX(
-            smplx_model_path, use_pce=False, flat_hand_mean=True
+            smplx_model_path, use_pca=False, flat_hand_mean=True
         ).to(self.device).eval()
 
         with open(part_segmentation_path, "r") as f:
